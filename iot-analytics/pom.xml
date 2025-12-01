@@ -6,7 +6,7 @@
     <parent>
         <groupId>com.iot.project</groupId>
         <artifactId>iot-solution-parent</artifactId>
-        <version>1.0-SNAPSHOT</version>
+        <version>1.1</version>
     </parent>
 
     <artifactId>iot-analytics</artifactId>
@@ -15,7 +15,7 @@
         <dependency>
             <groupId>com.iot.project</groupId>
             <artifactId>iot-shared</artifactId>
-            <version>1.0-SNAPSHOT</version>
+            <version>1.1</version>
         </dependency>
 
         <dependency>
