@@ -97,19 +97,19 @@ mvn clean package
 ### 2. Start Workers (in separate terminals):
 ```bash
 # Terminal 1: Analytics
-java -jar iot-analytics/target/iot-analytics-1.0-SNAPSHOT.jar
+java -jar iot-analytics/target/iot-analytics-1.1.jar
 
 # Terminal 2: Ingestion
-java -jar iot-ingestion/target/iot-ingestion-1.0-SNAPSHOT.jar
+java -jar iot-ingestion/target/iot-ingestion-1.1.jar
 ```
 
 ### 3. Inject Data:
 ```bash
 # Terminal 3
-java -cp iot-ingestion/target/iot-ingestion-1.0-SNAPSHOT.jar com.iot.ingestion.UploadClient data/dataset.csv
+java -cp iot-ingestion/target/iot-ingestion-1.1.jar com.iot.ingestion.UploadClient data/dataset.csv
 ```
 
 ### 4. Generate Report:
 ```bash
-java -cp iot-analytics/target/iot-analytics-1.0-SNAPSHOT.jar com.iot.analytics.ExportClient
+java -cp iot-analytics/target/iot-analytics-1.1.jar com.iot.analytics.ExportClient
 ```
