@@ -24,9 +24,9 @@ public class SummarizeWorker {
 
     // --- CONFIGURATION ---
     // REPLACE THESE WITH YOUR ACTUAL RESOURCE NAMES
-    private static final String QUEUE_URL = "https://sqs.us-east-1.amazonaws.com/YOUR_ACCOUNT_ID/queue-summarize";
-    private static final String INTERIM_BUCKET = "iot-lab-interim-grp13-1";
-    private static final String NEXT_QUEUE_URL = "https://sqs.us-east-1.amazonaws.com/YOUR_ACCOUNT_ID/queue-consolidate.fifo";
+    private static final String QUEUE_URL = "https://sqs.us-east-1.amazonaws.com/710771987572/queue-summarize";
+    private static final String INTERIM_BUCKET = "iot-interim-grp13-1";
+    private static final String NEXT_QUEUE_URL = "https://sqs.us-east-1.amazonaws.com/710771987572/queue-consolidate.fifo";
 
     private final S3Client s3;
     private final SqsClient sqs;
