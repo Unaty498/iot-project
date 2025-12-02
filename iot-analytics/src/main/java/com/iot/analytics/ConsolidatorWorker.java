@@ -18,10 +18,9 @@ import java.util.List;
 
 public class ConsolidatorWorker {
 
-    // --- CONFIGURATION ---
-    private static final String QUEUE_URL = "https://sqs.us-east-1.amazonaws.com/710771987572/queue-consolidate.fifo";
-    private static final String BUCKET_INTERIM = "iot-interim-grp13-1";
-    private static final String BUCKET_STATE = "iot-state-grp13-1";
+    private static final String QUEUE_URL = System.getenv().getOrDefault("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/710771987572/queue-consolidate.fifo");
+    private static final String BUCKET_INTERIM = System.getenv().getOrDefault("BUCKET_INTERIM", "iot-interim-grp13-1");
+    private static final String BUCKET_STATE = System.getenv().getOrDefault("BUCKET_STATE", "iot-state-grp13-1");
 
     private final SqsClient sqs;
     private final S3Client s3;
@@ -32,10 +31,11 @@ public class ConsolidatorWorker {
     }
 
     public void start() {
-        System.out.println("Consolidator Worker Démarré. En attente de messages...");
+        System.out.println("Consolidator Worker Started (FIFO Mode).");
 
         while (true) {
             try {
+                // Ensure we respect the FIFO order
                 List<Message> messages = sqs.receiveMessage(ReceiveMessageRequest.builder()
                         .queueUrl(QUEUE_URL)
                         .maxNumberOfMessages(1)
@@ -45,48 +45,50 @@ public class ConsolidatorWorker {
                 for (Message msg : messages) {
                     processMessage(msg);
                 }
-
             } catch (Exception e) {
-                System.err.println("Erreur dans la boucle principale : " + e.getMessage());
+                System.err.println("Main loop error: " + e.getMessage());
                 try { Thread.sleep(5000); } catch (InterruptedException ignored) {}
             }
         }
     }
 
     private void processMessage(Message msg) {
-        String interimFileKey = msg.body();
-        System.out.println("Traitement du fichier intermédiaire : " + interimFileKey);
+        String interimKey = msg.body();
+        System.out.println("Consolidating summary: " + interimKey);
 
         try {
-            InputStream s3Stream = s3.getObject(b -> b.bucket(BUCKET_INTERIM).key(interimFileKey),
-                    ResponseTransformer.toInputStream());
+            // 1. Fetch Interim Summary
+            InputStream s3Stream = s3.getObject(b -> b.bucket(BUCKET_INTERIM).key(interimKey), ResponseTransformer.toInputStream());
             IntermediateSummary summary = JsonUtils.fromJson(s3Stream, IntermediateSummary.class);
 
-            String stateKey = summary.srcIp() + "-" + summary.dstIp() + ".json";
+            // 2. Load History
+            String stateKey = "state/" + summary.srcIp() + "_" + summary.dstIp() + ".json";
             TrafficState currentState = loadState(stateKey, summary.srcIp(), summary.dstIp());
 
+            // 3. Update Math (Welford's Logic / Sum of Squares)
             TrafficState newState = updateState(currentState, summary);
 
+            // 4. Save & Clean
             saveState(stateKey, newState);
 
-            s3.deleteObject(b -> b.bucket(BUCKET_INTERIM).key(interimFileKey));
+            // Delete interim file to satisfy "Least Storage" requirement
+            s3.deleteObject(b -> b.bucket(BUCKET_INTERIM).key(interimKey));
+
+            // Acknowledge message
             sqs.deleteMessage(b -> b.queueUrl(QUEUE_URL).receiptHandle(msg.receiptHandle()));
 
-            System.out.println("Mise à jour réussie pour : " + stateKey);
-
         } catch (Exception e) {
-            System.err.println("Echec du traitement pour " + interimFileKey + ": " + e.getMessage());
-            e.printStackTrace();
+            System.err.println("Failed to consolidate " + interimKey + ": " + e.getMessage());
+            // We do NOT delete the message here, so it retries later (Resilience)
         }
     }
 
-    private TrafficState loadState(String key, String srcIp, String dstIp) {
+    private TrafficState loadState(String key, String src, String dst) {
         try {
-            InputStream stream = s3.getObject(b -> b.bucket(BUCKET_STATE).key(key),
-                    ResponseTransformer.toInputStream());
+            InputStream stream = s3.getObject(b -> b.bucket(BUCKET_STATE).key(key), ResponseTransformer.toInputStream());
             return JsonUtils.fromJson(stream, TrafficState.class);
         } catch (NoSuchKeyException e) {
-            return TrafficState.empty(srcIp, dstIp);
+            return TrafficState.empty(src, dst);
         }
     }
 
@@ -96,14 +98,18 @@ public class ConsolidatorWorker {
     }
 
     private TrafficState updateState(TrafficState current, IntermediateSummary input) {
+        // Protect against bad data
+        long duration = Math.max(0, input.totalFlowDuration());
+        long packets = Math.max(0, input.totalFwdPackets());
+
         return new TrafficState(
                 current.srcIp(),
                 current.dstIp(),
                 current.count() + 1,
-                current.sumDuration() + input.totalFlowDuration(),
-                current.sumSqDuration() + Math.pow(input.totalFlowDuration(), 2),
-                current.sumPackets() + input.totalFwdPackets(),
-                current.sumSqPackets() + Math.pow(input.totalFwdPackets(), 2)
+                current.sumDuration() + duration,
+                current.sumSqDuration() + Math.pow(duration, 2),
+                current.sumPackets() + packets,
+                current.sumSqPackets() + Math.pow(packets, 2)
         );
     }
 

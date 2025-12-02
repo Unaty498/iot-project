@@ -16,16 +16,24 @@ import software.amazon.awssdk.services.sqs.model.*;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 
 public class SummarizeWorker {
 
-    // --- CONFIGURATION ---
-    private static final String QUEUE_URL = "https://sqs.us-east-1.amazonaws.com/710771987572/queue-summarize";
-    private static final String INTERIM_BUCKET = "iot-interim-grp13-1";
-    private static final String NEXT_QUEUE_URL = "https://sqs.us-east-1.amazonaws.com/710771987572/queue-consolidate.fifo";
+    private static final String QUEUE_URL = System.getenv().getOrDefault("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/710771987572/queue-summarize");
+    private static final String INTERIM_BUCKET = System.getenv().getOrDefault("BUCKET_INTERIM", "iot-interim-grp13-1");
+    private static final String NEXT_QUEUE_URL = System.getenv().getOrDefault("QUEUE_CONSOLIDATE", "https://sqs.us-east-1.amazonaws.com/710771987572/queue-consolidate.fifo");
+
+    // Required Column Names (Exact match to your schema)
+    private static final String COL_TIMESTAMP = "Timestamp";
+    private static final String COL_SRC_IP = "Src IP";
+    private static final String COL_DST_IP = "Dst IP";
+    private static final String COL_FLOW_DURATION = "Flow Duration";
+    private static final String COL_FWD_PKTS = "Tot Fwd Pkts";
 
     private final S3Client s3;
     private final SqsClient sqs;
@@ -37,81 +45,141 @@ public class SummarizeWorker {
 
     public void start() {
         System.out.println("Summarize Worker Started. Polling SQS...");
-
         while (true) {
             try {
-                ReceiveMessageRequest listenReq = ReceiveMessageRequest.builder()
+                ReceiveMessageResponse response = sqs.receiveMessage(ReceiveMessageRequest.builder()
                         .queueUrl(QUEUE_URL)
                         .maxNumberOfMessages(1)
                         .waitTimeSeconds(20)
-                        .build();
-
-                ReceiveMessageResponse response = sqs.receiveMessage(listenReq);
+                        .build());
 
                 for (Message message : response.messages()) {
-                    System.out.println("Received message: " + message.messageId());
                     processMessage(message);
-
                     sqs.deleteMessage(req -> req.queueUrl(QUEUE_URL).receiptHandle(message.receiptHandle()));
-                    System.out.println("Message deleted.");
                 }
             } catch (Exception e) {
-                e.printStackTrace();
-                try { Thread.sleep(5000); } catch (InterruptedException ignored) {}
+                System.err.println("Error processing messages: " + e.getMessage());
             }
         }
     }
 
     private void processMessage(Message sqsMessage) {
-        S3EventNotification notification = S3EventNotification.fromJson(sqsMessage.body());
+        try {
+            S3EventNotification notification = S3EventNotification.fromJson(sqsMessage.body());
+            if (notification.getRecords() == null) return;
 
-        if (notification.getRecords() == null) return;
-
-        for (S3EventNotificationRecord record : notification.getRecords()) {
-            String bucketName = record.getS3().getBucket().getName();
-            String fileKey = record.getS3().getObject().getKey();
-
-            System.out.println("Processing file: " + fileKey + " from bucket: " + bucketName);
-            processCsvFile(bucketName, fileKey);
+            for (S3EventNotificationRecord record : notification.getRecords()) {
+                String bucket = record.getS3().getBucket().getName();
+                String key = java.net.URLDecoder.decode(record.getS3().getObject().getKey(), StandardCharsets.UTF_8);
+                System.out.println("Processing file: " + key);
+                processCsvFile(bucket, key);
+            }
+        } catch (Exception e) {
+            System.err.println("Error parsing SQS message: " + e.getMessage());
         }
     }
 
     private void processCsvFile(String bucket, String key) {
-        try (ResponseInputStream<GetObjectResponse> s3Stream = s3.getObject(GetObjectRequest.builder()
-                .bucket(bucket).key(key).build());
+        try (ResponseInputStream<GetObjectResponse> s3Stream = s3.getObject(GetObjectRequest.builder().bucket(bucket).key(key).build());
              BufferedReader reader = new BufferedReader(new InputStreamReader(s3Stream, StandardCharsets.UTF_8))) {
 
-            Map<String, IntermediateSummary> aggregations = new HashMap<>();
+            // 1. Parse Header to find indices
+            String headerLine = reader.readLine();
+            if (headerLine == null) return;
 
+            Map<String, Integer> colMap = mapHeaders(headerLine);
+            if (!validateHeaders(colMap)) {
+                System.err.println("Skipping file " + key + ": Missing required columns.");
+                return;
+            }
+
+            // 2. Process Rows
+            Map<String, IntermediateSummary> aggregations = new HashMap<>();
             String line;
 
             while ((line = reader.readLine()) != null) {
-                String[] cols = line.split(",");
-                if (cols.length < 5) continue;
+                try {
+                    // Handle CSV splitting (including potential quotes if necessary, but simple split for now)
+                    String[] cols = line.split(",(?=(?:[^\"]*\"[^\"]*\")*[^\"]*$)", -1);
 
-                String date = cols[0];
-                String src = cols[1];
-                String dst = cols[2];
-                long duration = Long.parseLong(cols[3]);
-                long packets = Long.parseLong(cols[4]);
+                    String rawDate = cols[colMap.get(COL_TIMESTAMP)];
+                    String srcIp = cols[colMap.get(COL_SRC_IP)];
+                    String dstIp = cols[colMap.get(COL_DST_IP)];
+                    String rawDur = cols[colMap.get(COL_FLOW_DURATION)];
+                    String rawPkts = cols[colMap.get(COL_FWD_PKTS)];
 
-                String mapKey = src + ":" + dst + ":" + date;
+                    // Normalize Date (e.g., "01/11/2023 10:00" -> "2023-11-01")
+                    String dateKey = normalizeDate(rawDate);
 
-                aggregations.compute(mapKey, (k, v) -> {
-                    if (v == null) return new IntermediateSummary(src, dst, date, duration, packets);
-                    return new IntermediateSummary(src, dst, date,
-                            v.totalFlowDuration() + duration,
-                            v.totalFwdPackets() + packets);
-                });
+                    // Parse Numbers safely
+                    long duration = parseLongSafe(rawDur);
+                    long packets = parseLongSafe(rawPkts);
+
+                    String mapKey = srcIp + ":" + dstIp + ":" + dateKey;
+
+                    aggregations.compute(mapKey, (k, v) -> {
+                        if (v == null) return new IntermediateSummary(srcIp, dstIp, dateKey, duration, packets);
+                        return new IntermediateSummary(srcIp, dstIp, dateKey,
+                                v.totalFlowDuration() + duration,
+                                v.totalFwdPackets() + packets);
+                    });
+
+                } catch (Exception e) {
+                    // Log but don't stop processing the whole file
+                    // System.err.println("Skipping bad line: " + e.getMessage());
+                }
             }
 
+            // 3. Upload Results
             for (IntermediateSummary summary : aggregations.values()) {
                 uploadAndNotify(summary);
             }
 
         } catch (Exception e) {
             System.err.println("Failed to process file " + key + ": " + e.getMessage());
-            throw new RuntimeException(e);
+        }
+    }
+
+    private Map<String, Integer> mapHeaders(String headerLine) {
+        Map<String, Integer> map = new HashMap<>();
+        String[] headers = headerLine.split(",");
+        for (int i = 0; i < headers.length; i++) {
+            map.put(headers[i].trim(), i);
+        }
+        return map;
+    }
+
+    private boolean validateHeaders(Map<String, Integer> map) {
+        return map.containsKey(COL_TIMESTAMP) && map.containsKey(COL_SRC_IP) &&
+                map.containsKey(COL_DST_IP) && map.containsKey(COL_FLOW_DURATION) &&
+                map.containsKey(COL_FWD_PKTS);
+    }
+
+    private String normalizeDate(String timestamp) {
+        // Attempt to parse standard formats.
+        // VARIoT often uses: dd/MM/yyyy hh:mm:ss a OR yyyy-MM-dd HH:mm:ss
+        // Simple approach: Split by space to get Date part, then reformat if needed.
+        try {
+            String datePart = timestamp.split(" ")[0]; // "2023-11-01" or "01/11/2023"
+            if (datePart.contains("/")) {
+                String[] parts = datePart.split("/");
+                // Assuming dd/MM/yyyy -> yyyy-MM-dd
+                if (parts.length == 3) {
+                    return parts[2] + "-" + parts[1] + "-" + parts[0];
+                }
+            }
+            return datePart;
+        } catch (Exception e) {
+            return "unknown-date";
+        }
+    }
+
+    private long parseLongSafe(String value) {
+        try {
+            if (value == null || value.trim().isEmpty()) return 0;
+            return Long.parseLong(value.trim());
+        } catch (NumberFormatException e) {
+            return 0;
         }
     }
 
@@ -119,10 +187,7 @@ public class SummarizeWorker {
         String jsonFileName = "summary-" + UUID.randomUUID() + ".json";
         String jsonBody = JsonUtils.toJson(summary);
 
-        s3.putObject(PutObjectRequest.builder()
-                        .bucket(INTERIM_BUCKET)
-                        .key(jsonFileName)
-                        .build(),
+        s3.putObject(PutObjectRequest.builder().bucket(INTERIM_BUCKET).key(jsonFileName).build(),
                 software.amazon.awssdk.core.sync.RequestBody.fromString(jsonBody));
 
         sqs.sendMessage(SendMessageRequest.builder()
@@ -131,8 +196,6 @@ public class SummarizeWorker {
                 .messageGroupId(summary.srcIp())
                 .messageDeduplicationId(jsonFileName)
                 .build());
-
-        System.out.println("Exported summary for " + summary.srcIp() + " -> " + summary.dstIp());
     }
 
     public static void main(String[] args) {
