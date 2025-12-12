@@ -1,5 +1,6 @@
 package com.iot.ingestion;
 
+import com.iot.shared.ConfigLoader;
 import com.iot.shared.IntermediateSummary;
 import com.iot.shared.JsonUtils;
 import software.amazon.awssdk.core.ResponseInputStream;
@@ -24,9 +25,9 @@ import java.util.UUID;
 
 public class SummarizeWorker {
 
-    private static final String QUEUE_URL = System.getenv().getOrDefault("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/710771987572/queue-summarize");
-    private static final String INTERIM_BUCKET = System.getenv().getOrDefault("BUCKET_INTERIM", "iot-interim-grp13-1");
-    private static final String NEXT_QUEUE_URL = System.getenv().getOrDefault("QUEUE_CONSOLIDATE", "https://sqs.us-east-1.amazonaws.com/710771987572/queue-consolidate.fifo");
+    private static final String QUEUE_URL = ConfigLoader.getQueueSummarize();
+    private static final String INTERIM_BUCKET = ConfigLoader.getBucketInterim();
+    private static final String NEXT_QUEUE_URL = ConfigLoader.getQueueConsolidate();
 
     // Required Column Names (Exact match to your schema)
     private static final String COL_TIMESTAMP = "Timestamp";
@@ -39,8 +40,9 @@ public class SummarizeWorker {
     private final SqsClient sqs;
 
     public SummarizeWorker() {
-        this.s3 = S3Client.builder().region(Region.US_EAST_1).build();
-        this.sqs = SqsClient.builder().region(Region.US_EAST_1).build();
+        Region region = Region.of(ConfigLoader.getAwsRegion());
+        this.s3 = S3Client.builder().region(region).build();
+        this.sqs = SqsClient.builder().region(region).build();
     }
 
     public void start() {

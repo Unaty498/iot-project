@@ -1,5 +1,6 @@
 package com.iot.analytics;
 
+import com.iot.shared.ConfigLoader;
 import com.iot.shared.JsonUtils;
 import com.iot.shared.TrafficState;
 import software.amazon.awssdk.regions.Region;
@@ -11,24 +12,24 @@ import java.io.InputStream;
 
 public class ExportClient {
 
-    // Utilisez une variable d'environnement ou la valeur par défaut
-    private static final String STATE_BUCKET = System.getenv().getOrDefault("BUCKET_STATE", "iot-state-grp13-1");
-
     public static void main(String[] args) {
+        String stateBucket = ConfigLoader.getBucketState();
+        Region region = Region.of(ConfigLoader.getAwsRegion());
+
         // Le client hérite des droits du LabRole ou de votre profil local
-        S3Client s3 = S3Client.builder().region(Region.US_EAST_1).build();
+        S3Client s3 = S3Client.builder().region(region).build();
 
         // En-tête du CSV final
         System.out.println("SrcIP,DstIP,Count,AvgDuration,StdDevDuration,AvgPackets,StdDevPackets");
 
         try {
-            ListObjectsV2Response listing = s3.listObjectsV2(req -> req.bucket(STATE_BUCKET).prefix("state/"));
+            ListObjectsV2Response listing = s3.listObjectsV2(req -> req.bucket(stateBucket).prefix("state/"));
 
             for (S3Object obj : listing.contents()) {
                 // Ignorez les dossiers ou fichiers vides
                 if (obj.size() == 0) continue;
 
-                try (InputStream is = s3.getObject(req -> req.bucket(STATE_BUCKET).key(obj.key()))) {
+                try (InputStream is = s3.getObject(req -> req.bucket(stateBucket).key(obj.key()))) {
                     TrafficState state = JsonUtils.fromJson(is, TrafficState.class);
                     printStats(state);
                 } catch (Exception e) {
@@ -36,7 +37,7 @@ public class ExportClient {
                 }
             }
         } catch (Exception e) {
-            System.err.println("Impossible de lister le bucket " + STATE_BUCKET + " : " + e.getMessage());
+            System.err.println("Impossible de lister le bucket " + stateBucket + " : " + e.getMessage());
         }
     }
 

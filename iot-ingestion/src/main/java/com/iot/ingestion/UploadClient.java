@@ -1,5 +1,6 @@
 package com.iot.ingestion;
 
+import com.iot.shared.ConfigLoader;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
@@ -9,24 +10,24 @@ import java.util.UUID;
 
 public class UploadClient {
 
-    // REPLACE WITH YOUR ACTUAL RAW BUCKET NAME
-    private static final String BUCKET_NAME = "iot-raw-grp13-1";
-
     public static void main(String[] args) {
         if (args.length < 1) {
             System.out.println("Usage: java -cp ... UploadClient <path-to-csv>");
             System.exit(1);
         }
 
+        String bucketName = ConfigLoader.getBucketRaw();
+        Region region = Region.of(ConfigLoader.getAwsRegion());
+
         String filePath = args[0];
         String key = "traffic-data-" + UUID.randomUUID() + ".csv"; // Unique name
 
-        System.out.println("Uploading " + filePath + " to " + BUCKET_NAME + "...");
+        System.out.println("Uploading " + filePath + " to " + bucketName + "...");
 
-        try (S3Client s3 = S3Client.builder().region(Region.US_EAST_1).build()) {
+        try (S3Client s3 = S3Client.builder().region(region).build()) {
 
             s3.putObject(PutObjectRequest.builder()
-                            .bucket(BUCKET_NAME)
+                            .bucket(bucketName)
                             .key(key)
                             .build(),
                     Paths.get(filePath));

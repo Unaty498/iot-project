@@ -1,5 +1,6 @@
 package com.iot.analytics;
 
+import com.iot.shared.ConfigLoader;
 import com.iot.shared.IntermediateSummary;
 import com.iot.shared.JsonUtils;
 import com.iot.shared.TrafficState;
@@ -18,16 +19,17 @@ import java.util.List;
 
 public class ConsolidatorWorker {
 
-    private static final String QUEUE_URL = System.getenv().getOrDefault("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/710771987572/queue-consolidate.fifo");
-    private static final String BUCKET_INTERIM = System.getenv().getOrDefault("BUCKET_INTERIM", "iot-interim-grp13-1");
-    private static final String BUCKET_STATE = System.getenv().getOrDefault("BUCKET_STATE", "iot-state-grp13-1");
+    private static final String QUEUE_URL = ConfigLoader.getQueueConsolidate();
+    private static final String BUCKET_INTERIM = ConfigLoader.getBucketInterim();
+    private static final String BUCKET_STATE = ConfigLoader.getBucketState();
 
     private final SqsClient sqs;
     private final S3Client s3;
 
     public ConsolidatorWorker() {
-        this.sqs = SqsClient.builder().region(Region.US_EAST_1).build();
-        this.s3 = S3Client.builder().region(Region.US_EAST_1).build();
+        Region region = Region.of(ConfigLoader.getAwsRegion());
+        this.sqs = SqsClient.builder().region(region).build();
+        this.s3 = S3Client.builder().region(region).build();
     }
 
     public void start() {
